@@ -1,17 +1,115 @@
 ---
 title: "report"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 date: "`r Sys.Date()`"
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+set.seed(1234)
 ```
+
+## Dataset
+
+source : Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+A human activity recognition (HAR) dataset. Participants formed biceps curls in 5 different forms (Classe variable) while wearing a sensor in a glove, armband, and belt. There is also a sensor attached to the dumbbell.
+
+The aim of this report is to create a predictor for the form based on the readings of the sensors.
+
+
 
 ```{r dataset_setup}
 dir.create("data", showWarnings=FALSE)
-download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "data/training.csv")
-download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "data/testing.csv")
+if (!file.exists("data/training.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "data/training.csv")
+}
+if (!file.exists("data/testing.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "data/testing.csv")
+}
+
+training <- read.csv("data/training.csv")
+testing <- read.csv("data/testing.csv")
+```
+
+## Preprocessing
+
+Some columns are almost all NAs, so I will first remove these.
+```{r nas}
+nas <- colSums(is.na(training))
+cols <- which(nas > 19000)
+training <- training[, -cols]
+testing <- testing[, -cols]
+```
+
+Remove variables with very little variance
+```{r nearZeroVar}
+nzvs <- nearZeroVar(training)
+training <- training[, -nzvs]
+testing <- testing[, -nzvs]
+```
+
+Remove highly correlated variables with over 0.9 correlation
+```{r corr}
+cors <- cor(training[sapply(training, is.numeric)])
+highcor <- findCorrelation(cors, cutoff=0.9)
+training <- training[, -highcor]
+testing <- testing[, -highcor]
+```
+
+My intuition is that we want to predict the activity based on the sensor output only, so I remove the id, name, and timestamp/sliding window related info, leaving just the sensor data and activity class.
+```{r remove4}
+training <- training[, -c(1, 2, 3, 4, 5, 6)]
+testing <- testing[, -c(1, 2, 3, 4, 5, 6)]
+```
+
+Use preprocess to normalise data.
+```{r center/scale}
+preProc <- preProcess(training, method=c("center", "scale"))
+training <- predict(preProc, training)
+testing <- predict(preProc, testing)
+```
+
+## Model training
+
+Keep aside 20% of the data so that we can measure accuracy on out-of-sample data.
+```{r partition}
+tr_idx <- createDataPartition(training$classe, p=0.8, list=FALSE)
+tr <- training[tr_idx,]
+val <- training[-tr_idx,]
+```
+
+Use 5-fold cross validation.
+```{r traincontrol}
+fitControl <- trainControl(method = "cv", number = 5)
+```
+
+Fit using random forest, using doParallel to parallelize the cross validation, resulting in a big speed up.
+```{r fit, cache=TRUE, cache.path="cache/"}
+library(doParallel)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+fit <- train(classe~., data=tr, method="rf", trControl=fitControl)
+stopCluster(cl)
+```
+
+## Training outcome
+A simple random forest is quite successful, able to achieve a 99% accuracy on the validation data.
+```{r confusion}
+preds <- predict(fit, newdata = val)
+confusionMatrix(preds, factor(val$classe))
+```
+
+We can plot the importance of the variables found by the random forest, the yaw of the belt sensor seems to be most important.
+```{r importance}
+ggplot(varImp(fit), top=10)
+```
+
+## Predict
+Apply the model to the test dataset to get the predictions.
+```{r predict}
+predict(fit, newdata=testing)
 ```
